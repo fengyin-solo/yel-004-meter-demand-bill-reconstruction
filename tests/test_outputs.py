@@ -5,7 +5,9 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -13,22 +15,65 @@ import pytest
 
 ENTRY = os.environ.get("ENERGY_BILLING_ENTRY", "/app/rebuild_bills.py")
 SOURCE_ROOT = Path(os.environ.get("ENERGY_BILLING_DATA", "/data"))
+TRUSTED_PYTHON = Path("/usr/local/bin/python3")
+SETPRIV = Path("/usr/bin/setpriv")
+
+
+def candidate_argv(*arguments):
+    values = [str(value) for value in arguments]
+    if SETPRIV.is_file() and TRUSTED_PYTHON.is_file():
+        return [
+            str(SETPRIV),
+            "--reuid=65534",
+            "--regid=65534",
+            "--clear-groups",
+            str(TRUSTED_PYTHON),
+            "-I",
+            "-B",
+            *values,
+        ]
+    return [sys.executable, "-I", "-B", *values]
+
+
+def expose_to_candidate(path):
+    if not SETPRIV.is_file():
+        return
+    path.chmod(0o777)
+    for parent in path.parents:
+        if parent == Path("/tmp"):
+            break
+        parent.chmod(parent.stat().st_mode | 0o001)
+
+
+def prepare_candidate_root(root):
+    expose_to_candidate(root)
+    if not SETPRIV.is_file() or os.geteuid() != 0:
+        return
+    for path in root.rglob("*"):
+        shutil.chown(path, user=65534, group=65534)
+    shutil.chown(root, user=65534, group=65534)
+
+
+def invoke_candidate(*arguments, timeout=60, **kwargs):
+    return subprocess.run(
+        candidate_argv(*arguments),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        **kwargs,
+    )
 
 
 @pytest.fixture
 def root(tmp_path):
     destination = tmp_path / "data"
     shutil.copytree(SOURCE_ROOT, destination, symlinks=True)
+    prepare_candidate_root(destination)
     return destination
 
 
 def run_task(root):
-    return subprocess.run(
-        ["python3", ENTRY, "--root", str(root)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    return invoke_candidate(ENTRY, "--root", root)
 
 
 def report(root):
@@ -96,6 +141,19 @@ def test_duplicate_config_key_is_rejected(root):
         '{"billing_start_ms":1,"billing_end_ms":2,"max_gap_ms":60000,"max_gap_ms":70000}\n',
         encoding="utf-8",
     )
+    before_db = (root / "output/bills.sqlite3").read_bytes()
+    before_report = (root / "reports/billing-report.json").read_bytes()
+    result = run_task(root)
+    assert result.returncode != 0 and (root / "output/bills.sqlite3").read_bytes() == before_db
+    assert (root / "reports/billing-report.json").read_bytes() == before_report
+
+
+def test_zero_length_billing_window_is_rejected(root):
+    """题面：「billing_end_ms: INTEGER greater than start」。"""
+    path = root / "config.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["billing_end_ms"] = document["billing_start_ms"]
+    path.write_text(json.dumps(document) + "\n", encoding="utf-8")
     before_db = (root / "output/bills.sqlite3").read_bytes()
     before_report = (root / "reports/billing-report.json").read_bytes()
     result = run_task(root)
@@ -276,6 +334,18 @@ def test_max_gap_below_lower_bound_is_rejected(root):
     assert (root / "reports/billing-report.json").read_bytes() == before_report
 
 
+def test_max_gap_upper_bound_is_accepted(root):
+    """题面：「max_gap_ms: INTEGER from 60000 through 86400000」。"""
+    path = root / "config.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["max_gap_ms"] = 86400000
+    path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+    result = run_task(root)
+    assert result.returncode == 0
+    assert (root / "output/bills.sqlite3").is_file()
+    assert (root / "reports/billing-report.json").is_file()
+
+
 def test_report_schema_and_meta_are_exact(root):
     """题面：「meta 恰好含 billing_start_ms、billing_end_ms、total_energy_wh、total_charge_microcents 四行」。"""
     result = run_task(root)
@@ -342,15 +412,17 @@ def test_report_directory_failure_preserves_old_output(root):
 
 def test_concurrent_runs_converge(root):
     """题面：「相同现场重复或并发运行均成功且输出字节一致。」"""
-    first = subprocess.Popen(["python3", ENTRY, "--root", str(root)])
-    second = subprocess.Popen(["python3", ENTRY, "--root", str(root)])
-    assert first.wait(60) == 0 and second.wait(60) == 0
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(run_task, root) for _ in range(2)]
+        results = [future.result() for future in futures]
+    assert [result.returncode for result in results] == [0, 0]
 
 
 def test_large_site_finishes_within_public_limit(tmp_path):
     """题面：「现场账单重建须在 20 秒内结束。」"""
     root = tmp_path / "scale-site"
     shutil.copytree(SOURCE_ROOT, root, symlinks=True)
+    prepare_candidate_root(root)
     database_path = root / "metering.sqlite3"
     database_path.unlink()
     (root / "config.json").write_text(
@@ -432,12 +504,7 @@ def test_large_site_finishes_within_public_limit(tmp_path):
         )
         db.commit()
     started = time.monotonic()
-    result = subprocess.run(
-        ["python3", ENTRY, "--root", str(root)],
-        capture_output=True,
-        text=True,
-        timeout=25,
-    )
+    result = invoke_candidate(ENTRY, "--root", root, timeout=25)
     elapsed = time.monotonic() - started
     summary = report(root)
     assert result.returncode == 0

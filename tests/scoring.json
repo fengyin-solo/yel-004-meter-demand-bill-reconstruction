@@ -12,12 +12,12 @@
     "test_outputs.py::test_account_energy_targets_must_partition_all_meters": {
       "priority": "core",
       "rationale": "account energy targets must partition all meters；这是任务的主交付路径，失败意味着核心业务结果不可用。",
-      "weight": 0.12
+      "weight": 0.116
     },
     "test_outputs.py::test_account_meter_count_is_part_of_partition": {
       "priority": "core",
       "rationale": "account meter count is part of partition；这是任务的主交付路径，失败意味着核心业务结果不可用。",
-      "weight": 0.12
+      "weight": 0.116
     },
     "test_outputs.py::test_calibration_order_is_enforced": {
       "priority": "schema",
@@ -53,6 +53,11 @@
       "priority": "boundary",
       "rationale": "max gap below lower bound is rejected；这验证公开边界和拒收口径，失败会产生越界输入或错误放行。",
       "weight": 0.033
+    },
+    "test_outputs.py::test_max_gap_upper_bound_is_accepted": {
+      "priority": "boundary",
+      "rationale": "max gap upper bound is accepted；验证公开范围上端点仍可正常重建账期，避免误拒合法现场参数。",
+      "weight": 0.004
     },
     "test_outputs.py::test_meter_kind_enum_is_enforced": {
       "priority": "supporting",
@@ -108,6 +113,11 @@
       "priority": "schema",
       "rationale": "reset schema requires field tag；这验证结构、类型或序列化外观，失败会使下游无法稳定消费结果。",
       "weight": 0.025
+    },
+    "test_outputs.py::test_zero_length_billing_window_is_rejected": {
+      "priority": "boundary",
+      "rationale": "验证账期起止相等时拒收，避免零长度区间进入费率切分并掩盖比较边界错误。",
+      "weight": 0.004
     },
     "test_outputs.py::test_tariff_coverage_is_enforced": {
       "priority": "supporting",
