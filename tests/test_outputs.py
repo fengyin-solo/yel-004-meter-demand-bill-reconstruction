@@ -610,7 +610,7 @@ def test_cross_tariff_equal_remainders_use_tariff_id_order(tmp_path):
 
 
 def test_amount_half_microcent_rounds_up(tmp_path):
-    """题面：「金额……四舍五入，0.5 向正方向」。"""
+    """题面：「金额：energy_wh * rate_microcents_per_kwh / 1000，四舍五入，0.5 向正方向」。"""
     root = build_minimal_site(
         tmp_path,
         name="amount-half",
