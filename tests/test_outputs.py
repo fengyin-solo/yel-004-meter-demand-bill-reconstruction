@@ -512,3 +512,117 @@ def test_large_site_finishes_within_public_limit(tmp_path):
     assert summary["account_count"] == 50_000
     assert summary["meter_count"] == 50_000
     assert summary["total_energy_wh"] == 1_250_025_000
+
+
+def build_minimal_site(tmp_path, *, name, end_ms, readings, calibrations, tariffs, target):
+    root = tmp_path / name
+    for relative in ("output", "reports"):
+        (root / relative).mkdir(parents=True)
+    (root / "config.json").write_text(
+        json.dumps(
+            {
+                "billing_start_ms": 0,
+                "billing_end_ms": end_ms,
+                "max_gap_ms": max(60_000, end_ms),
+            },
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with sqlite3.connect(root / "metering.sqlite3") as db:
+        db.executescript(
+            """
+            create table meters(meter_id TEXT, kind TEXT NOT NULL,
+                primary key(meter_id));
+            create table accounts(account_id TEXT,
+                target_energy_wh INTEGER NOT NULL, meter_count INTEGER NOT NULL,
+                primary key(account_id));
+            create table readings(reading_id TEXT, meter_id TEXT,
+                raw_ms INTEGER, received_ms INTEGER, total_wh INTEGER);
+            create table calibrations(meter_id TEXT, raw_ms INTEGER,
+                correct_ms INTEGER, primary key(meter_id, raw_ms));
+            create table resets(reset_id TEXT, field_tag TEXT NOT NULL,
+                raw_ms INTEGER NOT NULL, before_wh INTEGER NOT NULL,
+                after_wh INTEGER NOT NULL, primary key(reset_id));
+            create table tariffs(tariff_id TEXT, start_ms INTEGER NOT NULL,
+                end_ms INTEGER NOT NULL, rate_microcents_per_kwh INTEGER NOT NULL,
+                primary key(tariff_id));
+            """
+        )
+        db.execute("insert into meters values('M1','residential')")
+        db.execute("insert into accounts values('A1',?,1)", (target,))
+        db.executemany(
+            "insert into readings values(?,?,?,?,?)",
+            [
+                (f"R{index:02d}", "M1", raw, received, total)
+                for index, (raw, received, total) in enumerate(readings, 1)
+            ],
+        )
+        db.executemany(
+            "insert into calibrations values(?,?,?)",
+            [("M1", raw, corrected) for raw, corrected in calibrations],
+        )
+        db.executemany(
+            "insert into tariffs values(?,?,?,?)",
+            tariffs,
+        )
+    prepare_candidate_root(root)
+    return root
+
+
+def test_calibration_half_millisecond_rounds_toward_positive(tmp_path):
+    """题面：「精确分数四舍五入到毫秒，恰好 0.5 向正方向取整」。"""
+    root = build_minimal_site(
+        tmp_path,
+        name="calibration-half",
+        end_ms=3,
+        readings=[(0, 1, 0), (2, 2, 1), (4, 3, 2)],
+        calibrations=[(0, 0), (4, 3)],
+        tariffs=[("T1", 0, 2, 1000), ("T2", 2, 3, 2000)],
+        target=2,
+    )
+    assert run_task(root).returncode == 0
+    with result_database(root) as db:
+        rows = db.execute(
+            "select tariff_id,energy_wh,charge_microcents from charges order by tariff_id"
+        ).fetchall()
+    assert rows == [("T1", 1, 1), ("T2", 1, 2)]
+
+
+def test_cross_tariff_equal_remainders_use_tariff_id_order(tmp_path):
+    """题面：「余数相同按 tariff_id 升序」。"""
+    root = build_minimal_site(
+        tmp_path,
+        name="tariff-tie",
+        end_ms=2,
+        readings=[(0, 1, 0), (2, 2, 1)],
+        calibrations=[(0, 0), (2, 2)],
+        tariffs=[("B-LATE", 0, 1, 1), ("A-EARLY", 1, 2, 1)],
+        target=1,
+    )
+    assert run_task(root).returncode == 0
+    with result_database(root) as db:
+        rows = db.execute(
+            "select tariff_id,energy_wh from charges order by tariff_id"
+        ).fetchall()
+    assert rows == [("A-EARLY", 1)]
+
+
+def test_amount_half_microcent_rounds_up(tmp_path):
+    """题面：「金额……四舍五入，0.5 向正方向」。"""
+    root = build_minimal_site(
+        tmp_path,
+        name="amount-half",
+        end_ms=60_000,
+        readings=[(0, 1, 0), (60_000, 2, 1)],
+        calibrations=[(0, 0), (60_000, 60_000)],
+        tariffs=[("ONLY", 0, 60_000, 500)],
+        target=1,
+    )
+    assert run_task(root).returncode == 0
+    with result_database(root) as db:
+        row = db.execute(
+            "select energy_wh,charge_microcents from charges where tariff_id='ONLY'"
+        ).fetchone()
+    assert row == (1, 1)

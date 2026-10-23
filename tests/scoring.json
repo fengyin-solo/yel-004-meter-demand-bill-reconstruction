@@ -12,12 +12,22 @@
     "test_outputs.py::test_account_energy_targets_must_partition_all_meters": {
       "priority": "core",
       "rationale": "account energy targets must partition all meters；这是任务的主交付路径，失败意味着核心业务结果不可用。",
-      "weight": 0.116
+      "weight": 0.112
     },
     "test_outputs.py::test_account_meter_count_is_part_of_partition": {
       "priority": "core",
       "rationale": "account meter count is part of partition；这是任务的主交付路径，失败意味着核心业务结果不可用。",
-      "weight": 0.116
+      "weight": 0.112
+    },
+    "test_outputs.py::test_amount_half_microcent_rounds_up": {
+      "priority": "boundary",
+      "rationale": "金额恰好半美分时向正方向舍入，决定账务金额不能被浮点截断吞掉半个最小单位。",
+      "weight": 0.004
+    },
+    "test_outputs.py::test_calibration_half_millisecond_rounds_toward_positive": {
+      "priority": "boundary",
+      "rationale": "校准时差恰为半毫秒时必须按题面方向舍入，否则费率切换会落到错误区间。",
+      "weight": 0.004
     },
     "test_outputs.py::test_calibration_order_is_enforced": {
       "priority": "schema",
@@ -32,7 +42,12 @@
     "test_outputs.py::test_conflicting_duplicate_reading_is_counted": {
       "priority": "core",
       "rationale": "conflicting duplicate reading is counted；这是任务的主交付路径，失败意味着核心业务结果不可用。",
-      "weight": 0.12
+      "weight": 0.116
+    },
+    "test_outputs.py::test_cross_tariff_equal_remainders_use_tariff_id_order": {
+      "priority": "boundary",
+      "rationale": "跨费率余数相等时必须按 tariff_id 升序决胜，保证分账结果确定且可复现。",
+      "weight": 0.004
     },
     "test_outputs.py::test_input_database_is_unchanged": {
       "priority": "supporting",
